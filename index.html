@@ -3090,10 +3090,52 @@ async function ghAfterLogin() {
   };
 })();
 
+// ── 로컬 서버 또는 GitHub에서 공유 설정 자동 로드 ─────────────────
+// 마스터가 저장한 data/gh_config.json을 자동으로 가져와 GitHub 연결 설정
+// → 새 컴퓨터/브라우저에서 별도 설정 없이 자동으로 팀 연결
+async function ghBootstrapAuto() {
+  if (ghConnected()) return; // 이미 설정됨
+
+  // ① 로컬 HTTP 서버에서 시도 (앱이 HTTP로 서비스될 때)
+  try {
+    var localRes = await fetch('./data/gh_config.json', { cache: 'no-store' });
+    if (localRes.ok) {
+      var cfg = await localRes.json();
+      if (cfg && cfg.token && cfg.owner && cfg.repo) {
+        localStorage.setItem(GH_CFG_KEY, JSON.stringify(cfg));
+        console.log('[GH] 로컬 서버에서 팀 설정 자동 로드:', cfg.owner + '/' + cfg.repo);
+        return;
+      }
+    }
+  } catch(e) { /* 로컬 파일 접근 불가 시 무시 (file:// 프로토콜 등) */ }
+
+  // ② GH_DEFAULT에 owner/repo만 있어도 config 파일 조회 시도 (공개 저장소)
+  if (GH_DEFAULT.owner && GH_DEFAULT.repo && !GH_DEFAULT.token) {
+    try {
+      var rawUrl = 'https://api.github.com/repos/' + GH_DEFAULT.owner + '/' + GH_DEFAULT.repo +
+                   '/contents/data/gh_config.json';
+      var ghRes = await fetch(rawUrl, { headers: { 'Accept': 'application/vnd.github+json' } });
+      if (ghRes.ok) {
+        var d = await ghRes.json();
+        var raw = atob(d.content.replace(/\n/g, ''));
+        var bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        var text = new TextDecoder('utf-8').decode(bytes);
+        var cfg2 = JSON.parse(text);
+        if (cfg2 && cfg2.token && cfg2.owner && cfg2.repo) {
+          localStorage.setItem(GH_CFG_KEY, JSON.stringify(cfg2));
+          console.log('[GH] GitHub에서 팀 설정 자동 로드:', cfg2.owner + '/' + cfg2.repo);
+        }
+      }
+    } catch(e) { /* 조회 실패 시 무시 */ }
+  }
+}
+
 // ── 앱 시작 시 로그인 전 사용자 목록 사전 동기화 ──────────────────
 // GH_DEFAULT 또는 localStorage 설정이 있으면 로그인 전에 users.json을
 // GitHub에서 가져와 로컬에 저장 → 새 브라우저에서도 최신 계정 사용 가능
 (async function ghStartupSync() {
+  await ghBootstrapAuto(); // ★ 먼저 로컬/공유 설정 파일에서 자동 로드 시도
   if (!ghConnected()) return;
   var loginBtn = document.querySelector('.btn-login');
   var origText = loginBtn ? loginBtn.textContent : null;
@@ -3622,6 +3664,14 @@ async function ghSaveSetup() {
         }
         await ghWrite('data/files_meta.json', JSON.stringify(meta, null, 2), 'init files_meta');
       }
+      // ★ 팀원 자동 연결용 설정 파일 저장 (비마스터가 토큰 없이도 자동 연결)
+      try {
+        await ghWrite('data/gh_config.json',
+          JSON.stringify({ token: token, owner: owner, repo: repo, branch: branch }, null, 2),
+          'update gh_config');
+        console.log('[GH] 팀 공유 설정 파일 저장 완료');
+      } catch(e) { console.warn('[GH] 설정 공유 저장 실패:', e.message); }
+
       ghStatus('ok', 'GitHub 연결됨');
       if (typeof showToast === 'function') showToast('GitHub 초기 업로드 완료 (' + step + '개 항목)', 'success');
     } catch(e) {
@@ -3632,9 +3682,11 @@ async function ghSaveSetup() {
   }, 800);
 }
 
-// ── 앱 시작 시 GH 상태 표시 (로그인 전)
+// ── 앱 시작 시 GH 상태 표시 (로그인 전) — bootstrap 완료 후 실행
 (async function() {
   try {
+    // bootstrap이 아직 실행 중일 수 있으므로 직접 다시 시도
+    await ghBootstrapAuto();
     if (!ghConnected()) { ghStatus('off', 'GitHub 미연결'); return; }
     var c = ghCfg();
     var res = await fetch('https://api.github.com/repos/' + c.owner + '/' + c.repo, {
