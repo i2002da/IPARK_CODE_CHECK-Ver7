@@ -1,7 +1,7 @@
 [
   {
     "id": "master",
-    "name": "ÃªÂ´ÂÃ«Â¦Â¬Ã¬ÂÂ",
+    "name": "마스터",
     "pw": "123456",
     "role": "master",
     "active": true
