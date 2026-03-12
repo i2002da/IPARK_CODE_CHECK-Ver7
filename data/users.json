@@ -1,16 +1,9 @@
 [
   {
     "id": "master",
-    "name": "ê´ë¦¬ì",
+    "name": "ÃªÂ´ÂÃ«Â¦Â¬Ã¬ÂÂ",
     "pw": "123456",
     "role": "master",
-    "active": true
-  },
-  {
-    "id": "5466",
-    "name": "ê¹ëí",
-    "pw": "123456",
-    "role": "user",
     "active": true
   }
 ]
