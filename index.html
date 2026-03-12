@@ -2704,9 +2704,25 @@ document.getElementById('srvPickModal').addEventListener('click',function(e){if(
 
 const GH_CFG_KEY = 'cc_gh_config';
 
+// ── 관리자가 배포 시 여기에 GitHub 기본 설정을 입력하세요 ────────
+// 모든 브라우저/사용자가 별도 설정 없이 자동으로 GitHub에 연결됩니다.
+// Fine-grained token (Contents: Read & write) 권한 필요.
+const GH_DEFAULT = {
+  token:  '',        // github_pat_... (필수)
+  owner:  '',        // GitHub 사용자명 또는 조직명
+  repo:   '',        // 저장소 이름
+  branch: 'main'     // 브랜치명
+};
+// ─────────────────────────────────────────────────────────────────
+
 function ghCfg() {
-  try { return JSON.parse(localStorage.getItem(GH_CFG_KEY) || 'null'); }
-  catch { return null; }
+  try {
+    const stored = JSON.parse(localStorage.getItem(GH_CFG_KEY) || 'null');
+    if (stored && stored.token && stored.owner && stored.repo) return stored;
+  } catch {}
+  // localStorage에 설정이 없으면 배포 시 설정한 기본값 사용
+  if (GH_DEFAULT.owner && GH_DEFAULT.repo && GH_DEFAULT.token) return { ...GH_DEFAULT };
+  return null;
 }
 function ghConnected() {
   const c = ghCfg();
@@ -2724,14 +2740,9 @@ function ghStatus(state, text) {
 async function ghApi(method, path, body) {
   const c = ghCfg();
   const url = 'https://api.github.com/repos/' + c.owner + '/' + c.repo + '/contents/' + path;
-  const opts = {
-    method: method,
-    headers: {
-      'Authorization': 'Bearer ' + c.token,
-      'Content-Type': 'application/json',
-      'Accept': 'application/vnd.github+json'
-    }
-  };
+  const hdrs = { 'Content-Type': 'application/json', 'Accept': 'application/vnd.github+json' };
+  if (c.token) hdrs['Authorization'] = 'Bearer ' + c.token;
+  const opts = { method: method, headers: hdrs };
   if (body) {
     // branch는 PUT/DELETE에만 포함 (GET에는 body 없음)
     const payload = Object.assign({}, body);
@@ -2788,6 +2799,9 @@ async function ghAfterLogin() {
   if (!ghConnected()) { ghStatus('off', 'GitHub 미연결'); return; }
   ghStatus('busy', '동기화 중...');
   try {
+    // 사용자 목록 동기화 (마스터가 추가/수정한 계정 반영)
+    const usersF = await ghRead('data/users.json');
+    if (usersF) localStorage.setItem('cc_ipark_users', usersF.content);
     // 공지 동기화
     const noticeF = await ghRead('data/notice.json');
     if (noticeF) localStorage.setItem('cc_notice', noticeF.content);
@@ -2825,6 +2839,24 @@ async function ghAfterLogin() {
   };
 })();
 
+// ── 앱 시작 시 로그인 전 사용자 목록 사전 동기화 ──────────────────
+// GH_DEFAULT 또는 localStorage 설정이 있으면 로그인 전에 users.json을
+// GitHub에서 가져와 로컬에 저장 → 새 브라우저에서도 최신 계정 사용 가능
+(async function ghStartupSync() {
+  if (!ghConnected()) return;
+  var loginBtn = document.querySelector('.btn-login');
+  var origText = loginBtn ? loginBtn.textContent : null;
+  try {
+    if (loginBtn) { loginBtn.disabled = true; loginBtn.textContent = '동기화 중...'; }
+    var usersF = await ghRead('data/users.json');
+    if (usersF) localStorage.setItem('cc_ipark_users', usersF.content);
+  } catch(e) {
+    console.warn('[GH] 시작 동기화 실패:', e.message);
+  } finally {
+    if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = origText || '로그인'; }
+  }
+})();
+
 // ── 사용자 저장 시 GH에도 저장 (saveUsers 를 wrap)
 (function patchSaveUsers() {
   var origSave = window.saveUsers;
@@ -2857,8 +2889,8 @@ async function ghAfterLogin() {
   if (!origSave) return;
   window.srvSavePend = async function() {
     if (!ghConnected()) { origSave(); return; }
-    // GH 업로드 모드
-    var pend = window.srvPend;
+    // GH 업로드 모드 (srvPend는 let으로 선언되어 window에 없으므로 직접 참조)
+    var pend = srvPend;
     if (!pend || !pend.length) return;
     ghStatus('busy', '파일 업로드 중...');
     var meta = (function(){ try{return JSON.parse(localStorage.getItem('cc_srv_meta')||'[]');}catch{return[];} })();
@@ -2880,7 +2912,7 @@ async function ghAfterLogin() {
     localStorage.setItem('cc_srv_meta', JSON.stringify(meta));
     await ghWrite('data/files_meta.json', JSON.stringify(meta, null, 2), 'update files_meta')
       .catch(function(e) { console.warn('[GH] 메타 저장 실패:', e.message); });
-    window.srvPend = [];
+    srvPend = [];
     ghStatus('ok', 'GitHub 연결됨');
     try { if (typeof _renderSrvPend === 'function') _renderSrvPend(); } catch(e) {}
     try { if (typeof _renderSrvSaved === 'function') _renderSrvSaved(); } catch(e) {}
@@ -2924,12 +2956,13 @@ async function ghAfterLogin() {
   var origPick = window.confirmSrvPick;
   if (!origPick) return;
   window.confirmSrvPick = function() {
-    var sel = window.srvPickSel;
+    // srvPickSel, srvPickTarget은 let 선언이므로 직접 참조
+    var sel = srvPickSel;
     if (!sel || !ghConnected()) { origPick(); return; }
     // GH에서 로드
     var id   = sel.id;
     var name = sel.name;
-    var idx  = window.srvPickTarget;
+    var idx  = srvPickTarget;
     if (idx === null || idx === undefined) { origPick(); return; }
     if (typeof closeSrvPick === 'function') closeSrvPick();
     var fnEl = document.getElementById('fn' + idx);
@@ -2949,12 +2982,12 @@ async function ghAfterLogin() {
         var u8  = new Uint8Array(bin.length);
         for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
         var wb = XLSX.read(u8, { type: 'array', cellDates: true });
-        window.wbs[idx] = wb;
+        // wbs, SLOT_LABELS는 const 선언이므로 직접 참조
+        wbs[idx] = wb;
         if (fnEl) { fnEl.textContent = '✓ [서버] ' + name; fnEl.className = 'uc-fn ok'; }
         var DOTS = ['c-blue','c-green','c-warn','c-purple'];
         if (card) { DOTS.forEach(function(c){ card.classList.remove(c); }); card.classList.add('loaded', DOTS[idx]||'c-blue'); }
-        var SL = window.SLOT_LABELS || {};
-        if (typeof showToast === 'function') showToast((SL[idx]||'') + ' 로드 완료 — ' + name, 'success');
+        if (typeof showToast === 'function') showToast((SLOT_LABELS[idx]||'') + ' 로드 완료 — ' + name, 'success');
       } catch(e) {
         if (fnEl) { fnEl.textContent = '❌ ' + e.message; fnEl.className = 'uc-fn'; }
         if (card) { card.classList.remove('loaded'); }
