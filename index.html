@@ -1052,16 +1052,25 @@
 </style>
 </head>
 <body>
-<!-- ── GitHub 설정 모달 (마스터 전용) ── -->
+<!-- ── GitHub 설정 모달 ── -->
 <div id="ghSetupModal">
   <div class="ghsetup-box">
     <div class="ghsetup-header">
-      <h2>⚙️ GitHub 저장소 설정 <span style="font-size:11px;color:var(--warn);font-weight:600;margin-left:6px">🔑 마스터 전용</span></h2>
+      <h2>⚙️ GitHub 저장소 설정</h2>
       <button class="mgmt-close" onclick="closeGhSetup()">✕</button>
     </div>
     <p style="font-size:12px;color:var(--text-dim);margin-bottom:18px;line-height:1.7">
-      GitHub 저장소를 연결하면 공유 파일·사용자 정보·공지사항이<br>모든 기기에서 공유됩니다.<br>Fine-grained token (Contents: Read &amp; write) 필요.
+      GitHub 저장소를 연결하면 공유 파일·사용자 정보·공지사항이<br>모든 기기에서 자동으로 동기화됩니다.<br>
+      <span id="ghSetupRoleHint" style="display:none;color:var(--accent)">팀장이 공유한 <b>연결 코드 URL</b>을 입력하거나, 아래 직접 입력하세요.</span>
     </p>
+    <!-- 연결 코드 입력 (비마스터용) -->
+    <div id="ghCodeImportArea" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:8px">🔗 연결 코드로 빠른 설정</div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="ghCodeInput" placeholder="팀장에게 받은 연결 URL 또는 코드 붙여넣기" style="flex:1;font-size:12px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+        <button class="btn-dpick-ok" style="white-space:nowrap;font-size:12px;padding:8px 14px" onclick="ghApplyCode()">적용</button>
+      </div>
+    </div>
     <div class="ghsetup-field">
       <label>GitHub Token <span style="color:var(--danger)">*</span></label>
       <input type="password" id="ghToken" placeholder="github_pat_..." autocomplete="off">
@@ -1080,9 +1089,19 @@
       <input type="text" id="ghBranch" placeholder="main (기본값)">
     </div>
     <div id="ghDiag"></div>
+    <!-- 연결 코드 생성 (마스터용) -->
+    <div id="ghExportArea" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:6px">🔗 팀원 연결 코드 공유</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">아래 URL을 팀원에게 공유하면 GitHub 설정 없이 자동 연결됩니다.</div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="ghExportUrl" readonly style="flex:1;font-size:11px;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim)">
+        <button class="btn-dpick-ok" style="white-space:nowrap;font-size:12px;padding:8px 14px" onclick="ghCopyExportUrl()">복사</button>
+      </div>
+    </div>
     <div class="ghsetup-footer">
       <button class="btn-dpick-cancel" onclick="closeGhSetup()">취소</button>
       <button class="btn-dpick-ok" style="background:var(--surface2);color:var(--text-muted);border:1px solid var(--border)" onclick="ghTest()">🔍 연결 테스트</button>
+      <button id="ghExportBtn" class="btn-dpick-ok" style="display:none;background:var(--surface2);color:var(--accent);border:1px solid var(--accent)" onclick="ghGenerateExportUrl()">🔗 연결 코드 생성</button>
       <button class="btn-dpick-ok" onclick="ghSaveSetup()">저장 · 연결</button>
     </div>
   </div>
@@ -1574,7 +1593,7 @@ function renderHeaderUser() {
     ${currentUser.role === 'master' ? `<button class="btn-user-mgmt" onclick="openMgmt()">👥 사용자 관리</button>` : ''}
     ${currentUser.role === 'master' ? `<button class="btn-notice" onclick="openNoticeEdit()">📢 공지 관리</button>` : ''}
     <button class="btn-notice-board" onclick="openNoticeBoard()">📋 게시판</button>
-    ${currentUser.role === 'master' ? `<button class="btn-gh-setup" style="display:inline-flex" onclick="openGhSetup()">⚙️ GitHub 설정</button>` : ''}
+    <button class="btn-gh-setup" style="display:inline-flex" onclick="openGhSetup()">⚙️ GitHub 설정</button>
     <button class="btn-theme" id="headerThemeBtn" onclick="toggleTheme()">
       <span class="theme-icon" id="headerThemeIcon"></span>
       <span id="headerThemeLabel"></span>
@@ -2989,10 +3008,11 @@ async function ghRead(path) {
   try {
     const d = await ghApi('GET', path);
     const raw = atob(d.content.replace(/\n/g, ''));
-    // ghWrite는 btoa(unescape(encodeURIComponent(str)))로 저장 → 역변환으로 한글 복원
-    // 바이너리(.b64) 파일은 ASCII만 포함하므로 역변환이 무해함
+    // TextDecoder: base64 → binary bytes → UTF-8 문자열 (한글 완벽 복원)
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     let content;
-    try { content = decodeURIComponent(escape(raw)); } catch { content = raw; }
+    try { content = new TextDecoder('utf-8').decode(bytes); } catch { content = raw; }
     return { content, sha: d.sha };
   } catch(e) {
     if (e.message.indexOf('404') >= 0) return null;
@@ -3002,7 +3022,11 @@ async function ghRead(path) {
 
 async function ghWrite(path, content, msg) {
   const ex  = await ghRead(path);
-  const b64 = btoa(unescape(encodeURIComponent(content)));
+  // TextEncoder: UTF-8 문자열 → bytes → base64 (한글 완벽 인코딩)
+  const enc = new TextEncoder().encode(content);
+  let binary = '';
+  for (let i = 0; i < enc.length; i++) binary += String.fromCharCode(enc[i]);
+  const b64 = btoa(binary);
   const body = { message: msg || 'update ' + path, content: b64 };
   if (ex && ex.sha) body.sha = ex.sha;
   return ghApi('PUT', path, body);
@@ -3060,9 +3084,7 @@ async function ghAfterLogin() {
         ghAfterLogin().catch(function(e) { console.warn('[GH]', e); });
         // updateSrvBar에 GH 버튼 표시 추가
         var btnG = document.getElementById('btnGhSetup');
-        if (btnG && window.currentUser && window.currentUser.role === 'master') {
-          btnG.style.display = '';
-        }
+        if (btnG) btnG.style.display = '';
       }
     }, 50);
   };
@@ -3406,6 +3428,26 @@ function ghStopAutoSync() {
   };
 })();
 
+// ── URL 해시를 통한 GitHub 설정 자동 적용 ──────────────────────
+// 팀장이 공유한 URL(#gh=...)을 열면 GitHub 설정이 자동으로 저장됨
+(function ghImportFromHash() {
+  try {
+    var hash = location.hash;
+    if (!hash || hash.indexOf('#gh=') !== 0) return;
+    var encoded = hash.slice(4);
+    var json = atob(decodeURIComponent(encoded));
+    var cfg = JSON.parse(json);
+    if (cfg && cfg.token && cfg.owner && cfg.repo) {
+      localStorage.setItem(GH_CFG_KEY, JSON.stringify(cfg));
+      // 해시 제거 (토큰 URL 노출 방지)
+      history.replaceState(null, '', location.pathname + location.search);
+      console.log('[GH] URL 코드에서 GitHub 설정 자동 적용:', cfg.owner + '/' + cfg.repo);
+    }
+  } catch(e) {
+    console.warn('[GH] 해시 설정 적용 실패:', e.message);
+  }
+})();
+
 // ── 설정 모달
 function openGhSetup() {
   var c = ghCfg() || {};
@@ -3415,7 +3457,64 @@ function openGhSetup() {
   document.getElementById('ghBranch').value = c.branch || 'main';
   var diag = document.getElementById('ghDiag');
   diag.style.display = 'none'; diag.textContent = '';
+  // 역할에 따라 UI 조정
+  var isMaster = window.currentUser && window.currentUser.role === 'master';
+  var exportArea = document.getElementById('ghExportArea');
+  var exportBtn  = document.getElementById('ghExportBtn');
+  var codeArea   = document.getElementById('ghCodeImportArea');
+  var roleHint   = document.getElementById('ghSetupRoleHint');
+  if (exportArea) exportArea.style.display = 'none';
+  if (exportBtn)  exportBtn.style.display  = isMaster ? '' : 'none';
+  if (codeArea)   codeArea.style.display   = isMaster ? 'none' : '';
+  if (roleHint)   roleHint.style.display   = isMaster ? 'none' : '';
   document.getElementById('ghSetupModal').classList.add('open');
+}
+
+// ── 연결 코드 생성 (마스터용)
+function ghGenerateExportUrl() {
+  var c = ghCfg();
+  if (!c || !c.token || !c.owner || !c.repo) {
+    if (typeof showToast === 'function') showToast('먼저 GitHub 설정을 저장하세요', 'error');
+    return;
+  }
+  var encoded = encodeURIComponent(btoa(JSON.stringify(c)));
+  var url = location.href.split('#')[0] + '#gh=' + encoded;
+  var el = document.getElementById('ghExportUrl');
+  if (el) el.value = url;
+  var area = document.getElementById('ghExportArea');
+  if (area) area.style.display = '';
+}
+
+function ghCopyExportUrl() {
+  var el = document.getElementById('ghExportUrl');
+  if (!el || !el.value) return;
+  navigator.clipboard.writeText(el.value).then(function() {
+    if (typeof showToast === 'function') showToast('연결 URL 복사 완료! 팀원에게 공유하세요.', 'success', 5000);
+  }).catch(function() {
+    el.select(); document.execCommand('copy');
+    if (typeof showToast === 'function') showToast('연결 URL 복사 완료!', 'success');
+  });
+}
+
+// ── 연결 코드 입력 적용 (비마스터용)
+function ghApplyCode() {
+  var raw = (document.getElementById('ghCodeInput') || {}).value || '';
+  raw = raw.trim();
+  try {
+    // URL 형식 (#gh=...) 또는 순수 base64 모두 지원
+    var encoded = raw.indexOf('#gh=') >= 0 ? raw.split('#gh=')[1] : raw;
+    var json = atob(decodeURIComponent(encoded));
+    var cfg = JSON.parse(json);
+    if (!cfg || !cfg.token || !cfg.owner || !cfg.repo) throw new Error('잘못된 코드');
+    localStorage.setItem(GH_CFG_KEY, JSON.stringify(cfg));
+    document.getElementById('ghToken').value  = cfg.token;
+    document.getElementById('ghOwner').value  = cfg.owner;
+    document.getElementById('ghRepo').value   = cfg.repo;
+    document.getElementById('ghBranch').value = cfg.branch || 'main';
+    if (typeof showToast === 'function') showToast('연결 코드 적용 완료! "저장·연결"을 눌러 확인하세요.', 'success');
+  } catch(e) {
+    if (typeof showToast === 'function') showToast('연결 코드가 올바르지 않습니다: ' + e.message, 'error');
+  }
 }
 function closeGhSetup() {
   document.getElementById('ghSetupModal').classList.remove('open');
@@ -3486,6 +3585,17 @@ async function ghSaveSetup() {
   }
   localStorage.setItem(GH_CFG_KEY, JSON.stringify({ token:token, owner:owner, repo:repo, branch:branch }));
   diag.style.borderColor = 'var(--success)';
+  // 마스터가 아닌 경우: 초기 업로드 없이 데이터만 가져옴
+  var isMaster = window.currentUser && window.currentUser.role === 'master';
+  if (!isMaster) {
+    diag.innerHTML = '✅ 연결 확인 완료. GitHub에서 데이터 가져오는 중...';
+    setTimeout(async function() {
+      closeGhSetup();
+      await ghAfterLogin().catch(function(e){ console.warn('[GH]', e); });
+      if (typeof showToast === 'function') showToast('GitHub 연결됨! 최신 데이터를 가져왔습니다.', 'success');
+    }, 400);
+    return;
+  }
   diag.innerHTML = '✅ 연결 확인 완료. 데이터 업로드 시작...';
   setTimeout(async function() {
     closeGhSetup();
