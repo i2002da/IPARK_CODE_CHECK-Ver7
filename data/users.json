@@ -2,21 +2,14 @@
   {
     "id": "master",
     "name": "관리자",
-    "pw": "master1234",
+    "pw": "123456",
     "role": "master",
-    "active": true
-  },
-  {
-    "id": "user1",
-    "name": "홍길동",
-    "pw": "user1234",
-    "role": "user",
     "active": true
   },
   {
     "id": "5466",
     "name": "김동훈",
-    "pw": "5466",
+    "pw": "54656",
     "role": "user",
     "active": true
   }
