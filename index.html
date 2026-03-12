@@ -3227,6 +3227,185 @@ async function ghAfterLogin() {
   };
 })();
 
+// ══════════════════════════════════════════════════════════════
+//  실시간 동기화 — 다른 컴퓨터의 변경사항 반영
+//  ① 모달 열기 전 on-demand pull  ② 60초 자동 polling
+// ══════════════════════════════════════════════════════════════
+
+/* ── 3가지 데이터를 GitHub에서 일괄 pull ─────────────────────────
+   silent=true : ghStatus 표시 생략 (백그라운드 polling용)
+   반환값 : 변경된 데이터가 하나라도 있으면 true                    */
+async function ghPullLatest(silent) {
+  if (!ghConnected()) return false;
+  if (!silent) ghStatus('busy', '동기화 중...');
+  var changed = false;
+  try {
+    // ① 사용자 목록
+    var uF = await ghRead('data/users.json');
+    if (uF && uF.content !== localStorage.getItem('cc_ipark_users')) {
+      localStorage.setItem('cc_ipark_users', uF.content);
+      changed = true;
+      // 현재 사용자 계정 상태 확인 (삭제/비활성화 감지)
+      if (currentUser) {
+        try {
+          var remoteUsers = JSON.parse(uF.content);
+          var me = remoteUsers.find(function(u){ return u.id === currentUser.id; });
+          if (!me || !me.active) {
+            if (typeof showToast === 'function') showToast('계정이 변경되어 로그아웃됩니다.', 'info');
+            setTimeout(function(){ if (typeof doLogout === 'function') doLogout(); }, 1200);
+            return false;
+          }
+          currentUser = me; // 이름·비밀번호 등 최신 정보 반영
+        } catch(e) {}
+      }
+    }
+    // ② 공지사항
+    var nF = await ghRead('data/notice.json');
+    if (nF && nF.content !== localStorage.getItem('cc_notice')) {
+      localStorage.setItem('cc_notice', nF.content);
+      changed = true;
+    }
+    // ③ 서버 파일 메타
+    var mF = await ghRead('data/files_meta.json');
+    if (mF && mF.content !== localStorage.getItem('cc_srv_meta')) {
+      localStorage.setItem('cc_srv_meta', mF.content);
+      changed = true;
+      if (typeof updateSrvBar === 'function') updateSrvBar();
+    }
+    if (!silent) ghStatus('ok', 'GitHub 연결됨');
+    return changed;
+  } catch(e) {
+    console.warn('[GH] Pull 실패:', e.message);
+    if (!silent) ghStatus('err', 'GitHub 오류');
+    return false;
+  }
+}
+
+/* ── 60초 주기 자동 동기화 ──────────────────────────────────── */
+var _ghAutoSyncTimer = null;
+
+function ghStartAutoSync() {
+  if (_ghAutoSyncTimer) return;
+  _ghAutoSyncTimer = setInterval(async function() {
+    if (!currentUser || !ghConnected()) return;
+    var changed = await ghPullLatest(true);
+    if (!changed) return;
+    // 변경이 있으면 열려 있는 모달 UI 갱신
+    try {
+      if (document.getElementById('srvMgmtModal') &&
+          document.getElementById('srvMgmtModal').classList.contains('open')) {
+        if (typeof _renderSrvSaved === 'function') _renderSrvSaved();
+      }
+    } catch(e) {}
+    try {
+      if (document.getElementById('noticeBoardModal') &&
+          document.getElementById('noticeBoardModal').classList.contains('open')) {
+        if (typeof _renderNoticeBoard === 'function') _renderNoticeBoard();
+      }
+    } catch(e) {}
+    try {
+      if (document.getElementById('userMgmtModal') &&
+          document.getElementById('userMgmtModal').classList.contains('open')) {
+        if (typeof renderUserList === 'function') renderUserList();
+      }
+    } catch(e) {}
+    // 새 활성 공지가 있을 수 있으므로 팝업 재확인
+    try { if (typeof checkAndShowNotice === 'function') checkAndShowNotice(); } catch(e) {}
+  }, 60000); // 60초 간격
+}
+
+function ghStopAutoSync() {
+  if (_ghAutoSyncTimer) { clearInterval(_ghAutoSyncTimer); _ghAutoSyncTimer = null; }
+}
+
+/* ── patchLogin 업데이트: 로그인 성공 후 자동 동기화 시작 ─────── */
+(function patchLoginAutoSync() {
+  var prevDoLogin = window.doLogin;
+  if (!prevDoLogin) return;
+  window.doLogin = function() {
+    prevDoLogin();
+    setTimeout(function() {
+      var overlay = document.getElementById('loginOverlay');
+      if (overlay && overlay.style.display === 'none') {
+        ghStartAutoSync();
+      }
+    }, 200);
+  };
+})();
+
+/* ── patchDoLogout: 로그아웃 시 자동 동기화 중지 ──────────────── */
+(function patchDoLogout() {
+  var origLogout = window.doLogout;
+  if (!origLogout) return;
+  window.doLogout = function() {
+    ghStopAutoSync();
+    origLogout();
+  };
+})();
+
+/* ── 모달 열기 전 on-demand pull ───────────────────────────────
+   사용자가 각 모달을 열 때 먼저 GitHub에서 최신 데이터를 받아옴   */
+
+// 사용자 관리 모달
+(function patchOpenMgmt() {
+  var orig = window.openMgmt;
+  if (!orig) return;
+  window.openMgmt = async function() {
+    if (ghConnected()) {
+      try {
+        var uF = await ghRead('data/users.json');
+        if (uF) localStorage.setItem('cc_ipark_users', uF.content);
+      } catch(e) { console.warn('[GH] openMgmt sync 실패:', e.message); }
+    }
+    orig();
+  };
+})();
+
+// 공지 게시판 모달
+(function patchOpenNoticeBoard() {
+  var orig = window.openNoticeBoard;
+  if (!orig) return;
+  window.openNoticeBoard = async function() {
+    if (ghConnected()) {
+      try {
+        var nF = await ghRead('data/notice.json');
+        if (nF) localStorage.setItem('cc_notice', nF.content);
+      } catch(e) { console.warn('[GH] openNoticeBoard sync 실패:', e.message); }
+    }
+    orig();
+  };
+})();
+
+// 서버 파일 선택 모달
+(function patchOpenSrvPick() {
+  var orig = window.openSrvPick;
+  if (!orig) return;
+  window.openSrvPick = async function(slotIdx) {
+    if (ghConnected()) {
+      try {
+        var mF = await ghRead('data/files_meta.json');
+        if (mF) { localStorage.setItem('cc_srv_meta', mF.content); if (typeof updateSrvBar === 'function') updateSrvBar(); }
+      } catch(e) { console.warn('[GH] openSrvPick sync 실패:', e.message); }
+    }
+    orig(slotIdx);
+  };
+})();
+
+// 서버 파일 관리 모달 (마스터)
+(function patchOpenSrvMgmt() {
+  var orig = window.openSrvMgmt;
+  if (!orig) return;
+  window.openSrvMgmt = async function() {
+    if (ghConnected()) {
+      try {
+        var mF = await ghRead('data/files_meta.json');
+        if (mF) { localStorage.setItem('cc_srv_meta', mF.content); if (typeof updateSrvBar === 'function') updateSrvBar(); }
+      } catch(e) { console.warn('[GH] openSrvMgmt sync 실패:', e.message); }
+    }
+    orig();
+  };
+})();
+
 // ── 설정 모달
 function openGhSetup() {
   var c = ghCfg() || {};
