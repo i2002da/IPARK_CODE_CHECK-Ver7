@@ -5,5 +5,12 @@
     "pw": "123456",
     "role": "master",
     "active": true
+  },
+  {
+    "id": "5466",
+    "name": "김동훈",
+    "pw": "5466",
+    "role": "user",
+    "active": true
   }
 ]
