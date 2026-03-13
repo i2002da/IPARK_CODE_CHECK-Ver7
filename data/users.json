@@ -1,9 +1,16 @@
 [
   {
     "id": "master",
-    "name": "ÃªÂ´ÂÃ«Â¦Â¬Ã¬ÂÂ",
-    "pw": "123456",
+    "name": "관리자",
+    "pw": "master1234",
     "role": "master",
+    "active": true
+  },
+  {
+    "id": "user1",
+    "name": "홍길동",
+    "pw": "user1234",
+    "role": "user",
     "active": true
   },
   {
