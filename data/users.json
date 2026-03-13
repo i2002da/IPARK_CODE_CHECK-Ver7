@@ -2,7 +2,7 @@
   {
     "id": "master",
     "name": "관리자",
-    "pw": "master1234",
+    "pw": "123456",
     "role": "master",
     "active": true
   },
